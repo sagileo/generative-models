@@ -17,7 +17,9 @@ from scripts.util.detection.nsfw_and_watermark_dectection import \
     DeepFloydDataFiltering
 from sgm.inference.helpers import embed_watermark
 from sgm.util import default, instantiate_from_config
+from functools import partial
 
+lowvram_mode = True
 
 def sample(
     input_path: str = "assets/test_image.png",  # Can either be image file or folder with image files
@@ -70,6 +72,8 @@ def sample(
         num_frames,
         num_steps,
     )
+    if lowvram_mode:
+        model = model.half()
     torch.manual_seed(seed)
 
     path = Path(input_path)
@@ -109,6 +113,8 @@ def sample(
             image = image * 2.0 - 1.0
 
         image = image.unsqueeze(0).to(device)
+        if lowvram_mode:
+            image = image.half()
         H, W = image.shape[2:]
         assert image.shape[1] == 3
         F = 8
@@ -162,11 +168,15 @@ def sample(
                     c[k] = rearrange(c[k], "b t ... -> (b t) ...", t=num_frames)
 
                 randn = torch.randn(shape, device=device)
+                if lowvram_mode:
+                    randn = randn.half()
 
                 additional_model_inputs = {}
                 additional_model_inputs["image_only_indicator"] = torch.zeros(
                     2, num_frames
                 ).to(device)
+                if lowvram_mode:
+                    additional_model_inputs["image_only_indicator"] = additional_model_inputs["image_only_indicator"].half()
                 additional_model_inputs["num_video_frames"] = batch["num_video_frames"]
 
                 def denoiser(input, sigma, c):
@@ -175,9 +185,13 @@ def sample(
                     )
 
                 samples_z = model.sampler(denoiser, randn, cond=c, uc=uc)
+                if lowvram_mode:
+                    samples_z = samples_z.half()
                 model.en_and_decode_n_samples_a_time = decoding_t
                 samples_x = model.decode_first_stage(samples_z)
                 samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
+                if lowvram_mode:
+                    samples = samples.float()
 
                 os.makedirs(output_folder, exist_ok=True)
                 base_count = len(glob(os.path.join(output_folder, "*.mp4")))
@@ -197,6 +211,7 @@ def sample(
                     .numpy()
                     .astype(np.uint8)
                 )
+                torch.cuda.empty_cache()
                 for frame in vid:
                     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                     writer.write(frame)
@@ -275,4 +290,12 @@ def load_model(
 
 
 if __name__ == "__main__":
-    Fire(sample)
+    Fire(partial(sample, 
+                # input_path='assets/test_image.png',
+                # input_path='/data1/henglei_lv/stable-diffusion/v1.5/output_annotation/A horse jumping over a box/1.png',
+                input_path='/data1/henglei_lv/stable-diffusion/material/hip-flexor-pain-dancers_small.jpeg',
+                # input_path='/data1/henglei_lv/stable-diffusion/material/gunman.jpg',
+                # input_path='/data1/henglei_lv/stable-diffusion/material/black and white striped snake.png',
+                version='svd_xt', 
+                decoding_t=10,
+        ))
